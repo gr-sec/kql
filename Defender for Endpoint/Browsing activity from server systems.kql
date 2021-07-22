@@ -1,0 +1,42 @@
+// Detect web browser activity from servers to public IP addresses
+// Identify potentially risky browsing behaviour
+//
+// Exclude certain systems such as RDS hosts where this is expected
+let excludedservers = dynamic(['some-server@domain.com','some-other-server@domain.com']);
+//
+// Define browsers
+let browsers = dynamic(['iexplore.exe','chrome.exe','firefox.exe','msedge.exe']);
+//
+// Exclude 'safe' sites called automatically by browsers on launch (ocsp etc)
+let excludedsites = dynamic(['apis.google.com',
+                             'ocsp.rootg2.amazontrust.com',
+                             'crl.identrust.com',
+                             'ocsp.msocsp.com',
+                             'ocsp.pki.goog',
+                             'ocsp.godaddy.com',
+                             'ocsp.usertrust.com',
+                             'unitedkingdom.smartscreen-prod.microsoft.com',
+                             'ocsp.digicert.com','clientservices.googleapis.com',
+                             'safebrowsing.googleapis.com',
+                             'iecvlist.microsoft.com',
+                             'update.googleapis.com']);
+//
+// Set timespan for search
+let timerange = 7d;
+//
+// Get list of servers (modify to include MSDE device groups)
+let servers = 
+    DeviceInfo
+    | where Timestamp > ago(timerange)
+    | where MachineGroup == "Domain Controllers"
+         or MachineGroup == "Servers"
+    | distinct DeviceName;
+DeviceNetworkEvents
+| where Timestamp > ago(timerange)
+| where DeviceName in~ (servers) 
+    and DeviceName !in~ (excludedservers)
+| where InitiatingProcessFileName in~ (browsers)
+| where ActionType == "ConnectionSuccess"
+| where RemoteIPType =~ "public"
+| where RemoteUrl !in~ (excludedsites)
+| project Timestamp, DeviceName, RemoteIP, RemotePort, RemoteUrl, InitiatingProcessFileName, InitiatingProcessAccountName

@@ -1,0 +1,22 @@
+// Suspicious PowerShell Commands (lolbas, PowerSploit, Empire etc)
+// Query for Powershell cmdlets
+let powershellCommands =
+    DeviceEvents
+    | where Timestamp > ago(7d)
+    | where ActionType == "PowerShellCommand"
+        // Extract the powershell command name from the Command field in the AdditionalFields JSON column
+    | project PowershellCommand=extractjson("$.Command", AdditionalFields, typeof(string)), InitiatingProcessCommandLine, InitiatingProcessParentFileName, Timestamp, DeviceId, DeviceName, ReportId, AccountName
+    | where PowershellCommand !endswith ".ps1" and PowershellCommand !endswith ".exe";
+// Filter Powershell cmdlets executed on relevant machine and time period
+powershellCommands //| where DeviceId == DeviceId and Timestamp between ((timestamp-5min) .. 10min)
+//| where DeviceName contains "6266"
+| where PowershellCommand =~ "Invoke-WebRequest"
+   or PowershellCommand =~ "IWR"
+   or PowershellCommand =~ "Invoke-Shellcode"
+   or PowershellCommand =~ "Start-BitsTransfer"
+   or PowershellCommand contains "DownloadFile"
+   or PowershellCommand contains "Net.WebClient"
+   or PowershellCommand contains @"http://"
+   or PowershellCommand contains @"https://"
+| where InitiatingProcessParentFileName !in~ ("senseir.exe","agentexecutor.exe","aemagent.exe")
+| where InitiatingProcessCommandLine !contains "Windows Defender Advanced Threat Protection\\Downloads\\UnicastScanner"

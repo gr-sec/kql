@@ -1,0 +1,4 @@
+DeviceProcessEvents
+| where Timestamp > ago(7d)
+| where FileName =~ "fsutil.exe"
+and ProcessCommandLine has "usn" and ProcessCommandLine has "deletejournal"

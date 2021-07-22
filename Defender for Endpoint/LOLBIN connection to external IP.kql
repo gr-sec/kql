@@ -1,0 +1,27 @@
+// Identify connections to external IP addresses from LOLBIN applications that ordinarily have no need to.
+// Possible indication of malicious binary or malware injection
+DeviceNetworkEvents
+| where Timestamp > ago(7d)
+| where InitiatingProcessFileName =~ "calc.exe"
+     or InitiatingProcessFileName =~ "cmd.exe"
+     or InitiatingProcessFileName =~ "cscript.exe"
+     or InitiatingProcessFileName =~ "wscript.exe"
+     //or InitiatingProcessFileName =~ "rundll32.exe"
+     or InitiatingProcessFileName =~ "regsvr32.exe"
+     or InitiatingProcessFileName =~ "mshta.exe"
+     or InitiatingProcessFileName =~ "obdcconf.exe"
+     or InitiatingProcessFileName =~ "csrss.exe"
+     or InitiatingProcessFileName =~ "esentutl.exe"
+     or InitiatingProcessFileName =~ "cmstp.exe"
+     or InitiatingProcessFileName =~ "certutil.exe"
+     or InitiatingProcessFileName =~ "installutil.exe"
+     or InitiatingProcessFileName =~ "wsmprovhost.exe"
+     or InitiatingProcessFileName =~ "presentationhost.exe"
+     or InitiatingProcessFileName =~ "msbuild.exe"
+     or InitiatingProcessFileName =~ "regasm.exe"
+     //or InitiatingProcessFileName =~ "csc.exe"
+     or InitiatingProcessFileName =~ "ieexec.exe"
+| where InitiatingProcessCommandLine !contains "MonitorKnowledgeDiscovery.vbs"
+| where RemoteUrl !contains "winatp-gw-uks.microsoft.com"
+| where RemoteIPType == "Public"
+| project Timestamp, DeviceName, RemoteUrl, InitiatingProcessFileName, InitiatingProcessAccountName, DeviceId, ReportId

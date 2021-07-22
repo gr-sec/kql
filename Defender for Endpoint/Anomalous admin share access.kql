@@ -1,0 +1,11 @@
+//
+// Detect anomalous access to administrative shares
+//
+// Exclude backup and deployment servers
+let ServerAllowList = dynamic(["server1.domain.com","server2.domain.com"]);
+// Exclude backup and deployment service users
+let UserAllowList = dynamic(["serviceuser"]);
+DeviceFileEvents
+| where FolderPath contains @"$\" and FolderPath contains @"\\"
+| where InitiatingProcessAccountName !in~ (UserAllowList)
+| where DeviceName !in~ (ServerAllowList)

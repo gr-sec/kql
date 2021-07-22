@@ -1,0 +1,41 @@
+DeviceFileEvents 
+| where Timestamp > ago(7d)
+| where InitiatingProcessFileName in~ ("chrome.exe","firefox.exe","iexplore.exe","msedge.exe","outlook.exe")
+| where ActionType == "FileCreated"
+| where FileName endswith ".exe"
+     or FileName endswith ".ps1"
+     or FileName endswith ".bat"
+     or FileName endswith ".msi"
+     //or FileName endswith ".com"
+     //
+     // Word
+     or FileName endswith ".docm"
+     or FileName endswith ".dotm"
+     or FileName endswith ".docb"
+     //Excel
+     or FileName endswith ".xlsm"
+     or FileName endswith ".xlsb"
+     or FileName endswith ".xlam"
+     or FileName endswith ".xla"
+     or FileName endswith ".xlw"
+     or FileName endswith ".xltm"
+     or FileName endswith ".xlm"
+     or FileName endswith ".xlt"
+     or FileName endswith ".xll"
+     // PowerPoint
+     or FileName endswith ".pptm"
+     or FileName endswith ".potm"
+     or FileName endswith ".ppam"
+     or FileName endswith ".ppsm"
+     or FileName endswith ".sldm"
+     // Access
+     or FileName endswith ".accdb"
+     or FileName endswith ".mdb"
+     or FileName endswith ".accde"
+     or FileName endswith ".accdr"
+     or FileName endswith ".accdt"
+     // Archive files
+     or FileName endswith ".7z"
+     //or FileName endswith ".zip"
+| where FileName != "software_reporter_tool.exe"
+| where InitiatingProcessAccountSid != "S-1-5-18"

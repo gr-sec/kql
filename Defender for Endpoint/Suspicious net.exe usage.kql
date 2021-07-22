@@ -1,0 +1,12 @@
+// Suspicious use of net.exe for enumeration or persistence
+//
+// GR 06/19
+//
+DeviceProcessEvents
+| where Timestamp > ago(7d) 
+| where FileName == "net.exe" 
+| where ProcessCommandLine contains "domain"
+     or ProcessCommandLine contains "localgroup"
+     or ProcessCommandLine contains "administrators"
+     or ProcessCommandLine contains "group"
+     or ProcessCommandLine contains "user"

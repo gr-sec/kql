@@ -1,0 +1,12 @@
+DeviceProcessEvents
+| where FileName =~ "cmd.exe"
+     or FileName =~ "powershell.exe"  
+     or FileName =~ "svchost.exe" 
+     or FileName =~ "wmic.exe" 
+     or FileName =~ "sc.exe" 
+     or FileName =~ "reg.exe"      
+| where InitiatingProcessFileName =~ "winword.exe" 
+     or InitiatingProcessFileName =~ "excel.exe" 
+     or InitiatingProcessFileName =~ "powerpnt.exe"
+     or InitiatingProcessFileName =~ "acrord32.exe"
+| project FormatTimestamp = format_datetime(Timestamp, 'yyyy-MM-dd hh:mm:ss'), DeviceName, Timestamp, DeviceId, ReportId 

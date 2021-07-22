@@ -1,0 +1,5 @@
+// Event log cleared from command line using 'wevtutil cl'
+DeviceProcessEvents 
+| where Timestamp > ago(7d)
+| where ProcessCommandLine contains "wevtutil"
+    and ProcessCommandLine has "cl"

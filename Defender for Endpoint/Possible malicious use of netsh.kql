@@ -1,0 +1,24 @@
+// Detect possible malicious use of netsh.exe
+// - Port relay creation
+// - Packet capture
+// - Attempted firewall rule mod
+// - Adding a 'helper' DLL for AWL bypass
+//
+// GR 09/20
+//
+DeviceProcessEvents
+| where Timestamp > ago(1d)
+| where FileName =~ "netsh.exe" 
+| where ProcessCommandLine contains "portproxy"
+     or ProcessCommandLine contains "trace" 
+     or ProcessCommandLine contains "helper"
+     or (ProcessCommandLine contains "advfirewall" 
+         and ProcessCommandLine !contains "Dropbox"
+         and InitiatingProcessCommandLine !contains "AEMAgent"
+         and InitiatingProcessCommandLine !contains "CagService.exe"
+         and ProcessCommandLine !contains "RMM RTC Proxy"
+         and ProcessCommandLine !contains "Azure Advanced Threat Protection Sensor"
+         and ProcessCommandLine !contains "netsh advfirewall show allprofiles"
+         and ProcessCommandLine !contains "netsh advfirewall firewall show allprofiles"
+         and ProcessCommandLine !contains "netsh  advfirewall firewall show rule name=all verbose"
+         and ProcessCommandLine !contains "netsh  advfirewall show allprofiles firewallpolicy")

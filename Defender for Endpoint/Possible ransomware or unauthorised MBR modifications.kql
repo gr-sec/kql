@@ -1,0 +1,5 @@
+DeviceProcessEvents
+| where FileName == "fsutil.exe"
+| where ProcessCommandLine contains "*delete*"
+    or ProcessCommandLine contains "*deletevalue*"
+    or ProcessCommandLine contains "*import*" 
