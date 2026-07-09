@@ -1,0 +1,94 @@
+// New or anomalous RMM tools
+//
+// Look for new RMM tools using a dynamic historic baseline (anything new in detection window that was not present in the history window)
+//
+// We are using DeviceNetworkEvents RemoteURL fields and also extracted Zeek DNS artifacts from the endpoints
+//
+// Match on combination of host/domain, detect any additions to this list
+//
+// This can indicate unusual activity
+//
+// This should not trigger any active SOC alerts in isolation
+//
+let LookbackStart = 30d;
+let LookbackEnd = 3d;
+let ExcludedMachines = dynamic([
+    "excludedmachine.com"
+]);
+let AllowedRMMDomains = dynamic([
+    "raw.githubusercontent.com",
+    "learn.microsoft.com",
+    "github.com",
+    "mremoteng.org"
+]);
+let RMMArtifacts = externaldata(rmmTools:string)[h"https://lolrmm.io/api/rmm_tools.json"] with (format="raw")
+    | project parse_json(rmmTools)
+    | mv-expand rmmTools
+    | project RMMName = rmmTools.Name, RMMNetworkArtifacts = rmmTools.Artifacts.Network
+    | mv-expand RMMNetworkArtifacts 
+    | mv-expand RMMDomains = RMMNetworkArtifacts.Domains
+    | distinct tostring(RMMDomains);
+let RMMC2Domains = //extract unique second-level or higher domains from returned array
+    RMMArtifacts
+    | extend RMMDomains = extract_all(@"(?i)\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59}))\b", tostring(RMMDomains))
+    | mv-expand RMMDomains
+    | distinct tostring(RMMDomains)
+    | where RMMDomains !in (AllowedRMMDomains)
+    | order by RMMDomains asc;
+// Define retrospective baseline
+// Look at connection event remote URLs
+let HistoricConnectionEvents = 
+    DeviceNetworkEvents
+    | where Timestamp between (ago(LookbackStart) .. ago(LookbackEnd))
+    | where DeviceName !in~ (ExcludedMachines)
+    | where isnotempty(RemoteUrl)
+    | extend RemoteUrl = trim(@" ", tolower(RemoteUrl))
+    | where RemoteUrl in (RMMC2Domains)
+    | distinct  DeviceName, RemoteUrl
+    | extend artifacts = strcat(DeviceName, ":", RemoteUrl) //export these as device-service tuples
+    | distinct artifacts;
+// Also look at host Zeek DNS events
+let HistoricHostDnsEvents = 
+    DeviceNetworkEvents
+    | where Timestamp between (ago(LookbackStart) .. ago(LookbackEnd))
+    | where DeviceName !in~ (ExcludedMachines)
+    | where ActionType == "DnsConnectionInspected"
+    | extend DnsDomain = tostring(parse_json(AdditionalFields).query)
+    | where isnotempty(DnsDomain)
+    | extend RemoteUrl = trim(@" ", tolower(RemoteUrl))
+    | where DnsDomain in (RMMC2Domains)
+    | extend artifacts = strcat(DeviceName, ":", DnsDomain) //export these as device-service tuples
+    | distinct artifacts;
+// Concatenate and deduplicate
+let HistoricAllEvents = union HistoricConnectionEvents, HistoricHostDnsEvents
+| distinct artifacts;
+// Check detection window against lookback window
+let RecentConnectionEvents = 
+    DeviceNetworkEvents
+    | where Timestamp > ago(LookbackEnd)
+    | where DeviceName !in~ (ExcludedMachines)
+    | where isnotempty(RemoteUrl)
+    | extend RemoteUrl = trim(@" ", tolower(RemoteUrl))
+    | extend ConnectionArtifacts = strcat(DeviceName, ":", RemoteUrl)
+    | where RemoteUrl in (RMMC2Domains)
+    | where ConnectionArtifacts !in~ (HistoricAllEvents)
+    | extend URL = RemoteUrl
+    | extend DetectionType = "Device connection events"
+    | project Timestamp, DeviceName, URL, RemoteIP, InitiatingProcessFileName, InitiatingProcessCommandLine, ConnectionArtifacts, DetectionType;
+let RecentDnsEvents = 
+    DeviceNetworkEvents
+    | where Timestamp > ago(LookbackEnd)
+    | where DeviceName !in~ (ExcludedMachines)
+    | where ActionType == "DnsConnectionInspected"
+    | extend DnsDomain = tostring(parse_json(AdditionalFields).query)
+    | where DnsDomain in (RMMC2Domains)
+    | where isnotempty(DnsDomain)
+    | extend RemoteUrl = trim(@" ", tolower(RemoteUrl))
+    | extend ConnectionArtifacts = strcat(DeviceName, ":", DnsDomain)
+    | where ConnectionArtifacts !in~ (HistoricAllEvents)
+    | extend URL = DnsDomain
+    | extend DetectionType = "Device DNS events"
+    | project Timestamp, DeviceName, URL, RemoteIP, InitiatingProcessFileName, InitiatingProcessCommandLine, ConnectionArtifacts, DetectionType;
+union RecentConnectionEvents, RecentDnsEvents
+
+
