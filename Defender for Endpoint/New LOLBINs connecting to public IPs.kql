@@ -1,0 +1,48 @@
+// Known-abused application connecting to public InitiatingProcessAccountName//
+//
+// Using LOLBAS project API as source, filtering on 'remote', 'upload' and 'download' categories
+//
+// Use historic events to generate a dynamic baseline so only detect new events
+//
+let DetectionWindow = 1d;
+let LookbackWindow = 30d;
+let ExcludedProcess = dynamic([ // A lot of 'normal' programs such as Office need to be excluded
+    "msedge.exe",
+    "winword.exe",
+    "outlook.exe",
+    "powerpnt.exe",
+    "excel.exe",
+    "visio.exe",
+    "explorer.exe",
+    "msaccess.exe",
+    "protocolhandler.exe",
+    "mpcmdrun.exe",
+    "onedrivestandaloneupdater.exe",
+    "msiexec.exe"
+]);
+let LOLBAS =
+externaldata(lolbins:string) [@"https://lolbas-project.github.io/api/lolbas.json"] with (format="raw")
+| project parse_json(lolbins)
+| mv-expand lolbins
+| mv-expand lolbins.Commands
+| where lolbins_Commands has_any ("download", "upload", "remote")
+| extend LolbinName = tolower((lolbins.Name))
+| order by LolbinName asc
+| distinct LolbinName ;
+let HistoricEvents = 
+    DeviceNetworkEvents
+    | where TimeGenerated between (ago(LookbackWindow) .. ago(DetectionWindow))
+    | where RemoteIPType has "Public"
+    | where InitiatingProcessFileName !in~ (ExcludedProcess)
+    | where InitiatingProcessFileName in (LOLBAS)
+    | extend Artifacts = strcat(DeviceName , ":" , InitiatingProcessFileName)
+    | distinct Artifacts;
+//HistoricEvents
+DeviceNetworkEvents
+| where TimeGenerated > ago(DetectionWindow)
+| where RemoteIPType has "Public"
+| where InitiatingProcessFileName !in~ (ExcludedProcess)
+| where InitiatingProcessFileName in (LOLBAS)
+| extend Artifacts = strcat(DeviceName , ":" , InitiatingProcessFileName)
+| where Artifacts !in (HistoricEvents)
+| project TimeGenerated, DeviceName, InitiatingProcessAccountName, RemoteIP, RemotePort, RemoteUrl, InitiatingProcessFolderPath, InitiatingProcessFileName, InitiatingProcessCommandLine
