@@ -1,0 +1,127 @@
+// Using the LOLRMM feed, look for file system artifacts that correlate with RMM tool activity
+//
+// Use a dynamic baseline based on last 30 days minus previous 24 hours, identify any new machine/service combo in 24 hour window
+//
+// LOLRMM feed is a community project and is not a complete dataset - we attempt to match on exact filename or path fragments where only a partial path is provided
+//
+// This may miss tools where the service binaries have been renamed, so a complentary query is needed to search for network artifacts
+//
+let LookbackWindow = todatetime(ago(30d));
+let DetectionWindow = todatetime(ago(1d));
+let RMMArtifacts =
+externaldata(rmmTools:string)
+[h"https://lolrmm.io/api/rmm_tools.json"]
+with (format="raw")
+| project rmmTools = parse_json(rmmTools)
+| mv-expand rmmTools
+| extend
+    RMMName = tostring(rmmTools.Name),
+    DiskArtifacts = rmmTools.Artifacts.Disk,
+    InstallPaths = rmmTools.Details.InstallationPaths
+// File paths may exist in the 'install path' field or the 'artifact' field wo we consolidate these into a single list
+| extend CombinedArtifacts = array_concat(
+        coalesce(InstallPaths, dynamic([])),
+        coalesce(
+            extract_all(@"\""File\"":\s*\""([^\""]+)", tostring(DiskArtifacts)),
+            dynamic([])
+        )
+    )
+| mv-expand ArtifactPath = CombinedArtifacts
+| extend ArtifactPath = tolower(trim(@" """, tostring(ArtifactPath)))
+| where isnotempty(ArtifactPath)
+| extend RMMFilePath = ArtifactPath
+| distinct RMMName, RMMFilePath;
+let ExcludedPathComponents = dynamic([
+    // exclude common directories for partial path matching - built-in OS paths or common dir names
+    // (we are only interested in distinct product paths)
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "windows",
+    "users",
+    "documents and settings",
+    "bin",
+    "c:",
+    "syswow64",
+    "appdata",
+    "local",
+    "roaming",
+    "system32",
+    "edgewebview",
+    "application", 
+    "agent",
+    "temp",
+    "plugins",
+    "packages",
+    "app",
+    "installer",
+    "systemapps",
+    "commmon files"
+]);
+let ExcludedProcess = dynamic([
+    //Common installer/updater names
+    "updater.exe",
+    "setup.exe",
+    //Common applications
+    "chrome.exe"
+]);
+let RMMFilePaths = 
+    // For partial paths, split path into subdirectry components (can be noisy matching)
+    RMMArtifacts
+    | where RMMFilePath startswith "C:"
+    | where RMMFilePath !startswith @"/" //exclude Unix-like paths
+    | distinct RMMFilePath
+    | extend PathLower = tolower(RMMFilePath)
+    | extend IsDirectory =
+        RMMFilePath endswith @"\" or
+        RMMFilePath endswith @"\*" or
+        not(RMMFilePath matches regex @"\\[^\\]+\.[a-z0-9]{1,10}$")
+    | where IsDirectory
+    | extend PathStripped =
+    case(
+        PathLower startswith @"c:\program files\", substring(RMMFilePath, 17),
+        PathLower startswith @"c:\program files (x86)\", substring(RMMFilePath, 23),
+        PathLower startswith @"c:\programdata\", substring(RMMFilePath, 15),
+        PathLower startswith @"c:\windows\", substring(RMMFilePath, 11),
+        PathLower startswith @"c:\users\", substring(RMMFilePath, 9),
+        RMMFilePath
+    )
+    | extend Parts = split(trim_end(@"\*", PathStripped), @"\")
+    | mv-expand Parts
+    | where isnotempty(Parts)
+    | project OriginalPath = RMMFilePath, FolderComponent = tostring(Parts)
+    | where FolderComponent !in (ExcludedPathComponents)
+    | distinct FolderComponent;
+let RMMExecutables = 
+    // Extract specific executable file names for hard matching
+    RMMArtifacts
+    | extend RMMFilePath = tostring(split(RMMFilePath, "\\")[-1])
+    | where RMMFilePath endswith ".exe"
+    | distinct RMMFilePath
+    | where RMMFilePath !startswith "<"
+    | order by RMMFilePath asc;
+// Build a historic baseline
+let HistoricEvents = 
+    DeviceNetworkEvents
+    | where TimeGenerated between (LookbackWindow .. DetectionWindow)
+    | where ActionType has "ConnectionSuccess"
+    | where InitiatingProcessFileName !in (ExcludedProcess)
+    | where InitiatingProcessFileName in (RMMExecutables)
+         or InitiatingProcessFolderPath has_any (RMMFilePaths)
+    | where RemoteIPType == "Public"
+    // Match on device/artifact tuples
+    | extend HistoricArtifacts = strcat(DeviceName, ":", InitiatingProcessFileName)
+    | distinct HistoricArtifacts;
+DeviceNetworkEvents
+// We are only interested in successful internet-bound connections
+| where TimeGenerated > DetectionWindow
+| where ActionType has "ConnectionSuccess"
+| where InitiatingProcessFileName !in (ExcludedProcess)
+| where InitiatingProcessFileName in (RMMExecutables)
+   or InitiatingProcessFolderPath has_any (RMMFilePaths)
+| where RemoteIPType == "Public"
+| extend HistoricArtifacts = strcat(DeviceName, ":", InitiatingProcessFileName)
+// Filter out new events only
+| where  HistoricArtifacts !in (HistoricEvents)
+| project TimeGenerated, DeviceName, RemoteUrl, InitiatingProcessFolderPath, InitiatingProcessFileName, InitiatingProcessAccountUpn
+| distinct DeviceName, InitiatingProcessAccountUpn, InitiatingProcessFileName
