@@ -35,8 +35,7 @@ let HistoricEvents =
     | where RemoteIPType has "Public"
     | where InitiatingProcessFileName !in~ (ExcludedProcess)
     | where InitiatingProcessFileName in (LOLBAS)
-    | extend Artifacts = strcat(DeviceName , ":" , InitiatingProcessFileName)
-    | distinct Artifacts;
+    | distinct DeviceName, InitiatingProcessFileName;
 //HistoricEvents
 DeviceNetworkEvents
 | where TimeGenerated > ago(DetectionWindow)
@@ -44,5 +43,5 @@ DeviceNetworkEvents
 | where InitiatingProcessFileName !in~ (ExcludedProcess)
 | where InitiatingProcessFileName in (LOLBAS)
 | extend Artifacts = strcat(DeviceName , ":" , InitiatingProcessFileName)
-| where Artifacts !in (HistoricEvents)
+| join kind=leftanti HistoricEvents on DeviceName, InitiatingProcessFileName
 | project TimeGenerated, DeviceName, InitiatingProcessAccountName, RemoteIP, RemotePort, RemoteUrl, InitiatingProcessFolderPath, InitiatingProcessFileName, InitiatingProcessCommandLine
