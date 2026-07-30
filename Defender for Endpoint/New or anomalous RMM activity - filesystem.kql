@@ -110,8 +110,7 @@ let HistoricEvents =
          or InitiatingProcessFolderPath has_any (RMMFilePaths)
     | where RemoteIPType == "Public"
     // Match on device/artifact tuples
-    | extend HistoricArtifacts = strcat(DeviceName, ":", InitiatingProcessFileName)
-    | distinct HistoricArtifacts;
+    | distinct DeviceName, InitiatingProcessFileName;
 DeviceNetworkEvents
 // We are only interested in successful internet-bound connections
 | where TimeGenerated > DetectionWindow
@@ -122,6 +121,6 @@ DeviceNetworkEvents
 | where RemoteIPType == "Public"
 | extend HistoricArtifacts = strcat(DeviceName, ":", InitiatingProcessFileName)
 // Filter out new events only
-| where  HistoricArtifacts !in (HistoricEvents)
+| join kind=leftanti HistoricEvents on DeviceName, InitiatingProcessFileName
 | project TimeGenerated, DeviceName, RemoteUrl, InitiatingProcessFolderPath, InitiatingProcessFileName, InitiatingProcessAccountUpn
 | distinct DeviceName, InitiatingProcessAccountUpn, InitiatingProcessFileName
