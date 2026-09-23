@@ -357,7 +357,7 @@ DeviceProcessEvents
 
 // Processes executing from user-controlled locations
 // T1036 Masquerading
-let TargetDevice = "wjec8853";
+let TargetDevice = "HOSTNAME";
 let Lookback = 24h;
 DeviceProcessEvents
 | where Timestamp >= ago(Lookback)
@@ -468,7 +468,7 @@ DeviceProcessEvents
 
 // Lateral movement and remote administration
 // T1021 Remote Services, T1021.006 Windows Remote Management, T1021.002 SMB/Windows Admin Shares
-let TargetDevice = "wjec8853";
+let TargetDevice = "HOSTNAME";
 let Lookback = 24h;
 DeviceProcessEvents
 | where Timestamp >= ago(Lookback)
@@ -718,7 +718,7 @@ union ProcessEvidence, RegistryEvidence, EventEvidence
 
 // Newly observed executable or script files
 // T1547 Boot or Logon Autostart Execution
-let TargetDevice = "wjec8853";
+let TargetDevice = "HOSTNAME";
 let Lookback = 24h;
 DeviceFileEvents
 | where Timestamp >= ago(Lookback)
@@ -761,7 +761,7 @@ DeviceFileEvents
 
 // PowerShell connecting to remote IP addresses
 // T1071 Application Layer Protocol, T1105 Ingress Tool Transfer, T1041 Exfiltration Over C2 Channel
-let Device = "wjec9166";
+let Device = "HOSTNAME";
 let InvestigationWindow = 24h;
 let PowerShellImages = 
 // Try to detect renamed PowerShell binaries as well as the original named file
@@ -783,7 +783,7 @@ DeviceNetworkEvents
 
 // Anomalous DNS requests versus organisational prevalence
 // T1071.004 DNS, T1568 Dynamic Resolution
-let TargetDevice = "wjec8853";
+let TargetDevice = "HOSTNAME";
 let InvestigationWindow = 24h;
 let BaselineWindow = 30d;
 let MaximumOrgDevices = 3;
@@ -894,7 +894,7 @@ DeviceProcessEvents
 // Note - LSASS is noisy and is only noteworthy if called by an unusual process
 //
 DeviceEvents
-| where DeviceName has "pwneddevice"
+| where DeviceName has "HOSTNAME"
 | where TimeGenerated > ago(24h)
 | where ActionType startswith "asr"
 | project TimeGenerated, ActionType, FileName, FolderPath, SHA256, InitiatingProcessFileName, InitiatingProcessFolderPath
