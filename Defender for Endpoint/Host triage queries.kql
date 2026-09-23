@@ -1,0 +1,949 @@
+// Host triage queries
+//
+// Run these as a targeted hunt on suspected compromised machines to detect anomalous or suspicious indicators from device
+//
+//
+//============================
+// Initial access
+//============================
+
+// Suspicious process spawned from Office application or browser
+// T1204 User Execution, T1566 Phishing, T1189 Drive-by Compromise
+// T1218 Signed Binary Proxy Execution
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+let OfficeOrBrowser = dynamic([
+    "winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
+    "msaccess.exe", "onenote.exe", "mspub.exe",
+    "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe",
+    "brave.exe", "opera.exe"
+]);
+let SuspiciousChildren = dynamic([
+    "cmd.exe", "powershell.exe", "pwsh.exe", "powershell_ise.exe",
+    "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe",
+    "regsvr32.exe", "certutil.exe", "bitsadmin.exe",
+    "curl.exe", "wget.exe", "wmic.exe", "schtasks.exe",
+    "sc.exe", "reg.exe", "net.exe", "net1.exe",
+    "whoami.exe", "nltest.exe", "dsquery.exe",
+    "msiexec.exe", "installutil.exe", "vssadmin.exe",
+    "wbadmin.exe", "bcdedit.exe", "procdump.exe",
+    "ssh.exe", "mstsc.exe"
+]);
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| where InitiatingProcessFileName in~ (OfficeOrBrowser)
+| where FileName in~ (SuspiciousChildren)
+    or FolderPath has_any (@"\AppData\", @"\Temp\", @"\Downloads\", @"\Public\")
+| extend User = strcat(AccountDomain, "\\", AccountName)
+| project Timestamp, DeviceName, User,
+          ParentProcess=InitiatingProcessFileName,
+          ParentPath=InitiatingProcessFolderPath,
+          ParentCommand=InitiatingProcessCommandLine,
+          ChildProcess=FileName, ChildPath=FolderPath,
+          ChildCommand=ProcessCommandLine,
+          SHA1, SHA256, ProcessIntegrityLevel,
+          ProcessId, InitiatingProcessId, ReportId
+| order by Timestamp desc
+
+
+
+
+
+//============================
+// Execution
+//============================
+
+
+// PowerShell executed by end user
+// T1059.001 PowerShell
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| where FileName in~ ("powershell.exe", "pwsh.exe", "powershell_ise.exe")
+| where AccountName !in~ ("system", "local service", "network service")
+| extend Command = tolower(ProcessCommandLine)
+| extend SuspiciousCommand =
+    Command contains "-enc"
+    or Command contains "-encodedcommand"
+    or Command contains "frombase64string"
+    or Command contains "downloadstring"
+    or Command contains "downloadfile"
+    or Command contains "invoke-webrequest"
+    or Command contains "invoke-restmethod"
+    or Command contains "invoke-expression"
+    or Command contains "iex "
+    or Command contains "-windowstyle hidden"
+    or Command contains "-w hidden"
+    or Command contains "-executionpolicy bypass"
+    or Command contains "-ep bypass"
+    or Command contains "reflection.assembly"
+    or Command contains "memorymemorystream"
+| extend User = strcat(AccountDomain, "\\", AccountName)
+| project Timestamp, DeviceName, User, SuspiciousCommand,
+          ProcessCommandLine, FolderPath, SHA1, SHA256,
+          ProcessIntegrityLevel, ProcessTokenElevation,
+          InitiatingProcessFileName, InitiatingProcessFolderPath,
+          InitiatingProcessCommandLine,
+          InitiatingProcessAccountName,
+          ProcessId, InitiatingProcessId, LogonId, ReportId
+| order by SuspiciousCommand desc, Timestamp desc
+
+
+
+//============================
+// Defense Evasion
+//============================
+
+
+// Security control impairment and log clearing
+// T1562 Impair Defences, T1070 Indicator Removal on Host, T1070.001 Clear Windows Event Logs
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| extend Cmd=tolower(ProcessCommandLine)
+| where Cmd contains "wevtutil cl"
+    or Cmd contains "clear-eventlog"
+    or Cmd contains "set-mppreference"
+    or Cmd contains "add-mppreference"
+    or Cmd contains "disableantispyware"
+    or Cmd contains "disablerealtimemonitoring"
+    or Cmd contains "exclusionpath"
+    or Cmd contains "exclusionprocess"
+    or Cmd contains "exclusionextension"
+    or Cmd contains "sc stop windefend"
+    or Cmd contains "net stop windefend"
+    or Cmd contains "sc stop sense"
+    or Cmd contains "net stop sense"
+    or Cmd contains "sc stop eventlog"
+    or Cmd contains "netsh advfirewall set"
+    or Cmd contains "bcdedit"
+    or Cmd contains "bootstatuspolicy"
+    or Cmd contains "recoveryenabled no"
+| project Timestamp, DeviceName, AccountDomain, AccountName,
+          FileName, FolderPath, ProcessCommandLine,
+          SHA1, ProcessIntegrityLevel,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          ProcessId, InitiatingProcessId, ReportId
+| order by Timestamp desc
+
+
+// PowerShell AMSI Patch Attempts
+// T1562.001 Impair Defences: Disable or Modify Security Tools
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceProcessEvents
+| where DeviceName has TargetDevice
+| where Timestamp >= ago(Lookback)
+| where FileName in~ ("powershell.exe","pwsh.exe")
+| where ProcessCommandLine has_any (
+    "amsiInitFailed",
+    "AmsiUtils",
+    "AmsiScanBuffer",
+    "VirtualProtect",
+    "WriteProcessMemory",
+    "[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils')",
+    "GetField('amsiInitFailed'",
+    "SetValue($null,$true)"
+)
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    FileName,
+    ProcessCommandLine,
+    InitiatingProcessFileName
+| order by Timestamp desc
+
+
+// Script Content Containing AMSI Bypass Code
+// T1562.001 Impair Defences: Disable or Modify Security Tools
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceEvents
+| where DeviceName has TargetDevice
+| where Timestamp >= ago(Lookback)
+| where ActionType == "PowerShellCommand"
+| where AdditionalFields has_any (
+    "amsiInitFailed",
+    "AmsiUtils",
+    "AmsiScanBuffer",
+    "VirtualProtect",
+    "Marshal.Copy",
+    "GetProcAddress",
+    "LoadLibrary",
+    "kernel32.dll"
+)
+| project
+    Timestamp,
+    DeviceName,
+    InitiatingProcessAccountName,
+    AdditionalFields
+
+// PowerShell Reflection Loading AMSI Internals
+// T1562.001 Impair Defences: Disable or Modify Security Tools
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceProcessEvents
+| where DeviceName has TargetDevice
+| where Timestamp >= ago(Lookback)
+| where FileName in~ ("powershell.exe","pwsh.exe")
+| where ProcessCommandLine has_all (
+    "System.Management.Automation",
+    "GetType"
+)
+| where ProcessCommandLine has_any (
+    "AmsiUtils",
+    "amsiInitFailed"
+)
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    ProcessCommandLine
+
+
+// AMSI DLL Tampering
+// T1562.001 Impair Defences: Disable or Modify Security Tools
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceImageLoadEvents
+| where DeviceName has TargetDevice
+| where Timestamp >= ago(Lookback)
+| where FileName =~ "amsi.dll"
+| project
+    Timestamp,
+    DeviceName,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    SHA1
+
+
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceProcessEvents
+| where DeviceName has TargetDevice
+| where Timestamp >= ago(Lookback)
+| where FileName in~ ("powershell.exe","pwsh.exe")
+| where ProcessCommandLine has_any (
+    "-enc",
+    "-encodedcommand"
+)
+| where ProcessCommandLine has_any (
+    "Amsi",
+    "amsiInitFailed",
+    "AmsiUtils"
+)
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    ProcessCommandLine
+
+
+
+// Encoded PowerShell + AMSI Indicators
+// T1562.001 Impair Defences: Disable or Modify Security Tools
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceProcessEvents
+| where DeviceName has TargetDevice
+| where Timestamp >= ago(Lookback)
+| where FileName in~ ("powershell.exe","pwsh.exe")
+| where ProcessCommandLine has_any (
+    "-enc",
+    "-encodedcommand"
+)
+| where ProcessCommandLine has_any (
+    "Amsi",
+    "amsiInitFailed",
+    "AmsiUtils"
+)
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    ProcessCommandLine
+
+
+// AMSI Advanced Hunting Correlation Rule
+// T1562.001 Impair Defences: Disable or Modify Security Tools
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+let AmsiIndicators =
+    DeviceProcessEvents
+    | where DeviceName has TargetDevice
+    | where Timestamp >= ago(Lookback)
+    | where FileName in~ ("powershell.exe","pwsh.exe")
+    | where ProcessCommandLine has_any (
+        "amsiInitFailed",
+        "AmsiUtils",
+        "AmsiScanBuffer",
+        "VirtualProtect",
+        "GetProcAddress"
+    )
+    | project DeviceId, DeviceName, Timestamp;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName has TargetDevice
+| where FileName in~ ("powershell.exe","pwsh.exe")
+| where ProcessCommandLine has_any (
+    "-enc",
+    "iex",
+    "downloadstring",
+    "invoke-expression",
+    "frombase64string"
+)
+| join kind=inner AmsiIndicators on DeviceId
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    ProcessCommandLine
+
+// AMSI detection from DeviceEvents
+
+
+// Abnormal parent-child process relationships
+// T1218 Signed Binary Proxy Execution
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| extend Parent=tolower(InitiatingProcessFileName),
+         Child=tolower(FileName)
+| extend Reason = case(
+    Parent in ("winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "msaccess.exe", "onenote.exe")
+        and Child in ("cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe"), "Office spawned interpreter or proxy binary",
+    Parent in ("chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe")
+        and Child in ("cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe"), "Browser spawned interpreter or proxy binary",
+    Parent == "services.exe"
+        and Child in ("cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe"), "Service Control Manager spawned command interpreter",
+    Parent == "svchost.exe"
+        and Child in ("cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe"), "Service host spawned command interpreter",
+    Parent in ("wmiprvse.exe", "wsmprovhost.exe")
+        and Child in ("cmd.exe", "powershell.exe", "pwsh.exe", "rundll32.exe"), "Remote management provider spawned process",
+    Parent in ("taskeng.exe", "taskhostw.exe")
+        and Child in ("cmd.exe", "powershell.exe", "pwsh.exe", "mshta.exe", "wscript.exe", "cscript.exe"), "Scheduled task engine spawned interpreter",
+    Parent == "spoolsv.exe", "Print spooler spawned child process",
+    Parent == "lsass.exe", "LSASS spawned child process",
+    Parent == "winlogon.exe"
+        and Child !in ("userinit.exe", "dwm.exe", "logonui.exe"), "Unexpected Winlogon child",
+    Parent == "userinit.exe"
+        and Child !in ("explorer.exe"), "Unexpected Userinit child",
+    Parent == "explorer.exe"
+        and Child in ("mshta.exe", "regsvr32.exe", "rundll32.exe", "certutil.exe"), "Explorer spawned proxy execution binary",
+    ""
+)
+| where isnotempty(Reason)
+| project Timestamp, DeviceName, Reason,
+          ParentProcess=InitiatingProcessFileName,
+          ParentPath=InitiatingProcessFolderPath,
+          ParentCommand=InitiatingProcessCommandLine,
+          ChildProcess=FileName, ChildPath=FolderPath,
+          ChildCommand=ProcessCommandLine,
+          AccountDomain, AccountName,
+          SHA1, SHA256,
+          ProcessId, InitiatingProcessId, ReportId
+| order by Timestamp desc
+
+
+
+// Processes executing from user-controlled locations
+// T1036 Masquerading
+let TargetDevice = "wjec8853";
+let Lookback = 24h;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| extend Path = tolower(FolderPath)
+| where Path contains @"\users\"
+    or Path contains @"\programdata\"
+    or Path contains @"\windows\temp\"
+    or Path contains @"\windows\tracing\"
+    or Path contains @"\$recycle.bin\"
+| where Path contains @"\appdata\"
+    or Path contains @"\downloads\"
+    or Path contains @"\desktop\"
+    or Path contains @"\documents\"
+    or Path contains @"\public\"
+    or Path contains @"\temp\"
+    or Path contains @"\programdata\"
+    or Path contains @"\$recycle.bin\"
+    or Path contains @"\windows\temp\"
+    or Path contains @"\windows\tracing\"
+| extend User = strcat(AccountDomain, "\\", AccountName)
+| project Timestamp, DeviceName, User, FileName, FolderPath,
+          ProcessCommandLine, SHA1, SHA256,
+          ProcessIntegrityLevel,
+          InitiatingProcessFileName, InitiatingProcessFolderPath,
+          InitiatingProcessCommandLine,
+          InitiatingProcessAccountName,
+          ProcessId, InitiatingProcessId, ReportId
+| order by Timestamp desc
+
+
+
+
+//============================
+// Credential Access
+//============================
+
+
+// Credential access and security-process interaction
+// T1003 OS Credential Dumping, T1003.001 LSASS Memory, T1003.002 Security Account Manager
+// T1550 Use Alternate Authentication Material
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| extend Cmd=tolower(ProcessCommandLine)
+| where FileName in~ ("procdump.exe", "procdump64.exe", "mimikatz.exe", "rundll32.exe", "comsvcs.dll")
+    or Cmd contains "lsass"
+    or Cmd contains "sekurlsa"
+    or Cmd contains "logonpasswords"
+    or Cmd contains "minidump"
+    or Cmd contains "comsvcs.dll"
+    or Cmd contains "sam save"
+    or Cmd contains "security save"
+    or Cmd contains "system save"
+    or Cmd contains "ntdsutil"
+    or Cmd contains "ntds.dit"
+| project Timestamp, DeviceName, AccountDomain, AccountName,
+          FileName, FolderPath, ProcessCommandLine,
+          SHA1, SHA256, ProcessIntegrityLevel,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          ProcessId, InitiatingProcessId, ReportId
+| order by Timestamp desc
+
+
+
+
+//============================
+// Discovery
+//============================
+
+
+// Common discovery and domain reconnaissance burst
+// T1082 System Information Discovery, T1033 Account Discovery, T1046 Network Service Discovery, T1482 Domain Trust Discovery, T1069 Permission Groups Discovery
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+let DiscoveryTools = dynamic([
+    "whoami.exe", "hostname.exe", "ipconfig.exe", "systeminfo.exe",
+    "tasklist.exe", "netstat.exe", "arp.exe", "route.exe",
+    "nltest.exe", "dsquery.exe", "dsget.exe", "net.exe", "net1.exe",
+    "quser.exe", "qwinsta.exe", "query.exe", "wmic.exe",
+    "adfind.exe", "setspn.exe", "klist.exe", "cmdkey.exe"
+]);
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| where FileName in~ (DiscoveryTools)
+| summarize FirstSeen=min(Timestamp),
+            LastSeen=max(Timestamp),
+            ExecutionCount=count(),
+            DistinctTools=dcount(FileName),
+            Tools=make_set(FileName, 50),
+            Commands=make_set(ProcessCommandLine, 100)
+    by DeviceName, AccountDomain, AccountName,
+       InitiatingProcessFileName,
+       InitiatingProcessId,
+       bin(Timestamp, 10m)
+| where ExecutionCount >= 4 or DistinctTools >= 3
+| order by Timestamp desc
+
+
+
+//============================
+// Lateral Movement
+//============================
+
+// Lateral movement and remote administration
+// T1021 Remote Services, T1021.006 Windows Remote Management, T1021.002 SMB/Windows Admin Shares
+let TargetDevice = "wjec8853";
+let Lookback = 24h;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| extend Cmd=tolower(ProcessCommandLine)
+| where FileName in~ (
+        "psexec.exe", "psexec64.exe", "paexec.exe",
+        "wmic.exe", "winrs.exe", "mstsc.exe", "ssh.exe",
+        "scp.exe", "sftp.exe", "net.exe", "net1.exe",
+        "cmdkey.exe", "runas.exe"
+    )
+    or Cmd contains @"\\"
+    or Cmd contains "/node:"
+    or Cmd contains "invoke-command"
+    or Cmd contains "enter-pssession"
+    or Cmd contains "new-pssession"
+    or Cmd contains "win32_process"
+    or Cmd contains "admin$"
+    or Cmd contains "c$"
+    or Cmd contains "ipc$"
+| project Timestamp, DeviceName, AccountDomain, AccountName,
+          FileName, FolderPath, ProcessCommandLine,
+          SHA1, ProcessIntegrityLevel,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine, InitiatingProcessParentFileName,
+          ProcessId, InitiatingProcessId, LogonId, ReportId
+| order by Timestamp desc
+
+
+
+// Remote desktop and SMB connections from the host
+// T1021.001 Remote Desktop Protocol, T1021.002 SMB/Windows Admin Shares
+let TargetDevice = "hostname";
+let Lookback = 24h;
+DeviceNetworkEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| where RemotePort in (22, 135, 139, 445, 3389, 5985, 5986)
+| summarize FirstSeen=min(Timestamp),
+            LastSeen=max(Timestamp),
+            ConnectionCount=count(),
+            Actions=make_set(ActionType, 10),
+            Commands=make_set(InitiatingProcessCommandLine, 20)
+    by DeviceName, RemoteIP, RemotePort, RemoteUrl,
+       InitiatingProcessFileName,
+       InitiatingProcessAccountDomain,
+       InitiatingProcessAccountName,
+       InitiatingProcessId,
+       InitiatingProcessSHA1
+| order by LastSeen desc
+
+
+//============================
+// Persistence
+//============================
+
+// Evidence of anomalous persistence
+// T1547 Boot or Logon Autostart Execution, T1546 Event Triggered Execution
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+let RegistryPersistence =
+    DeviceRegistryEvents
+    | where Timestamp >= ago(Lookback)
+    | where DeviceName =~ TargetDevice
+    | where ActionType in~ ("RegistryValueSet", "RegistryKeyCreated", "RegistryValueDeleted")
+    | where RegistryKey has_any (
+        @"\Software\Microsoft\Windows\CurrentVersion\Run",
+        @"\Software\Microsoft\Windows\CurrentVersion\RunOnce",
+        @"\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
+        @"\Software\Microsoft\Windows NT\CurrentVersion\Winlogon",
+        @"\Software\Microsoft\Windows NT\CurrentVersion\Windows",
+        @"\System\CurrentControlSet\Services",
+        @"\System\CurrentControlSet\Control\Session Manager",
+        @"\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options",
+        @"\Software\Microsoft\Windows NT\CurrentVersion\SilentProcessExit",
+        @"\Software\Classes\CLSID",
+        @"\Environment"
+    )
+    | project Timestamp, DeviceName,
+            PersistenceType="Registry",
+            Location=RegistryKey,
+            Name=RegistryValueName,
+            Value=tostring(RegistryValueData),
+            Actor=InitiatingProcessAccountName,
+            SourceProcess=InitiatingProcessFileName,
+            SourceCommand=InitiatingProcessCommandLine,
+            SourceSHA1=InitiatingProcessSHA1,
+            ReportId;
+let FilePersistence =
+    DeviceFileEvents
+    | where Timestamp >= ago(Lookback)
+    | where DeviceName =~ TargetDevice
+    | where ActionType in~ ("FileCreated", "FileRenamed", "FileModified")
+    | where FolderPath has_any (
+        @"\Start Menu\Programs\Startup",
+        @"\Windows\System32\Tasks",
+        @"\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
+    )
+    | project Timestamp, DeviceName,
+            PersistenceType="File",
+            Location=FolderPath,
+            Name=FileName,
+            Value=SHA1,
+            Actor=InitiatingProcessAccountName,
+            SourceProcess=InitiatingProcessFileName,
+            SourceCommand=InitiatingProcessCommandLine,
+            SourceSHA1=InitiatingProcessSHA1,
+            ReportId;
+let PersistenceEvents =
+DeviceEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| where ActionType has_any (
+    "ScheduledTask", "Service", "Wmi", "Startup",
+    "Autorun", "LogonScript", "PowerShellProfile"
+)
+| project Timestamp, DeviceName,
+          PersistenceType=ActionType,
+          Location="DeviceEvents",
+          Name=FileName,
+          Value=tostring(AdditionalFields),
+          Actor=InitiatingProcessAccountName,
+          SourceProcess=InitiatingProcessFileName,
+          SourceCommand=InitiatingProcessCommandLine,
+          SourceSHA1=InitiatingProcessSHA1,
+          ReportId;
+union RegistryPersistence, FilePersistence, PersistenceEvents
+| order by Timestamp desc
+
+
+// Abnormal scheduled task creation
+// T1053.005 Scheduled Task/Job: Scheduled Task
+let TargetDevice = "hostname";
+let Lookback = 24h;
+let ProcessEvidence =
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| where (FileName =~ "schtasks.exe" and ProcessCommandLine matches regex @"(?i)(/create|/change)")
+    or (FileName in~ ("powershell.exe", "pwsh.exe")
+        and ProcessCommandLine has_any ("Register-ScheduledTask", "New-ScheduledTask", "Set-ScheduledTask"))
+    or (FileName =~ "at.exe")
+| project Timestamp, DeviceName,
+          EvidenceType="Process",
+          ActionType,
+          FileName, FolderPath,
+          CommandLine=ProcessCommandLine,
+          AccountDomain, AccountName,
+          SHA1,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          ReportId;
+let FileEvidence =
+DeviceFileEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| where ActionType in~ ("FileCreated", "FileRenamed", "FileModified")
+| where FolderPath has @"\Windows\System32\Tasks"
+| project Timestamp, DeviceName,
+          EvidenceType="Task file",
+          ActionType,
+          FileName, FolderPath,
+          CommandLine="",
+          AccountDomain=InitiatingProcessAccountDomain,
+          AccountName=InitiatingProcessAccountName,
+          SHA1,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          ReportId;
+let EventEvidence =
+DeviceEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| where ActionType has "ScheduledTask"
+| project Timestamp, DeviceName,
+          EvidenceType="Device event",
+          ActionType,
+          FileName, FolderPath,
+          CommandLine=tostring(AdditionalFields),
+          AccountDomain=InitiatingProcessAccountDomain,
+          AccountName=InitiatingProcessAccountName,
+          SHA1=InitiatingProcessSHA1,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          ReportId;
+union ProcessEvidence, FileEvidence, EventEvidence
+| order by Timestamp desc
+
+
+
+// Abnormal service creation
+// T1543.003 Create or Modify System Process: Windows Service
+let TargetDevice = "hostname";
+let Lookback = 24h;
+let ProcessEvidence =
+    DeviceProcessEvents
+    | where Timestamp >= ago(Lookback)
+    | where DeviceName =~ TargetDevice
+    | where (FileName =~ "sc.exe" and ProcessCommandLine matches regex @"(?i)\b(create|config)\b")
+        or (FileName in~ ("powershell.exe", "pwsh.exe")
+            and ProcessCommandLine has_any ("New-Service", "Set-Service"))
+    | project Timestamp, DeviceName,
+            EvidenceType="Process",
+            ActionType,
+            ServiceLocation=FolderPath,
+            ServiceData=ProcessCommandLine,
+            Actor=strcat(AccountDomain, "\\", AccountName),
+            SourceProcess=InitiatingProcessFileName,
+            SourceCommand=InitiatingProcessCommandLine,
+            SourceSHA1=InitiatingProcessSHA1,
+            ReportId;
+let RegistryEvidence =
+    DeviceRegistryEvents
+    | where Timestamp >= ago(Lookback)
+    | where DeviceName =~ TargetDevice
+    | where ActionType in~ ("RegistryKeyCreated", "RegistryValueSet")
+    | where RegistryKey matches regex @"(?i)\\SYSTEM\\(CurrentControlSet|ControlSet\d+)\\Services\\"
+    | project Timestamp, DeviceName,
+            EvidenceType="Registry",
+            ActionType,
+            ServiceLocation=RegistryKey,
+            ServiceData=strcat(RegistryValueName, "=", tostring(RegistryValueData)),
+            Actor=strcat(InitiatingProcessAccountDomain, "\\", InitiatingProcessAccountName),
+            SourceProcess=InitiatingProcessFileName,
+            SourceCommand=InitiatingProcessCommandLine,
+            SourceSHA1=InitiatingProcessSHA1,
+            ReportId;
+let EventEvidence =
+    DeviceEvents
+    | where Timestamp >= ago(Lookback)
+    | where DeviceName =~ TargetDevice
+    | where ActionType has_any ("ServiceInstalled", "ServiceCreated")
+    | project Timestamp, DeviceName,
+            EvidenceType="Device event",
+            ActionType,
+            ServiceLocation=FolderPath,
+            ServiceData=tostring(AdditionalFields),
+            Actor=strcat(InitiatingProcessAccountDomain, "\\", InitiatingProcessAccountName),
+            SourceProcess=InitiatingProcessFileName,
+            SourceCommand=InitiatingProcessCommandLine,
+            SourceSHA1=InitiatingProcessSHA1,
+            ReportId;
+union ProcessEvidence, RegistryEvidence, EventEvidence
+| order by Timestamp desc
+
+
+
+// Newly observed executable or script files
+// T1547 Boot or Logon Autostart Execution
+let TargetDevice = "wjec8853";
+let Lookback = 24h;
+DeviceFileEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| where ActionType in~ ("FileCreated", "FileRenamed")
+| where FileName endswith ".exe"
+    or FileName endswith ".dll"
+    or FileName endswith ".sys"
+    or FileName endswith ".ps1"
+    or FileName endswith ".psm1"
+    or FileName endswith ".bat"
+    or FileName endswith ".cmd"
+    or FileName endswith ".vbs"
+    or FileName endswith ".js"
+    or FileName endswith ".jse"
+    or FileName endswith ".hta"
+    or FileName endswith ".scr"
+    or FileName endswith ".lnk"
+| extend UserControlled =
+    FolderPath has_any (
+        @"\AppData\", @"\Temp\", @"\Downloads\",
+        @"\Desktop\", @"\Public\", @"\$Recycle.Bin\"
+    ) and FolderPath has @"\users\"
+| project Timestamp, DeviceName, ActionType,
+          FileName, FolderPath, FileSize,
+          SHA1, SHA256, UserControlled,
+          InitiatingProcessAccountDomain,
+          InitiatingProcessAccountName,
+          InitiatingProcessFileName,
+          InitiatingProcessFolderPath,
+          InitiatingProcessCommandLine,
+          InitiatingProcessSHA1,
+          ReportId
+| order by UserControlled desc, Timestamp desc
+
+
+//============================
+// Command & Control
+//============================
+
+// PowerShell connecting to remote IP addresses
+// T1071 Application Layer Protocol, T1105 Ingress Tool Transfer, T1041 Exfiltration Over C2 Channel
+let Device = "wjec9166";
+let InvestigationWindow = 24h;
+let PowerShellImages = 
+// Try to detect renamed PowerShell binaries as well as the original named file
+DeviceProcessEvents
+| where DeviceName has Device
+| where TimeGenerated > ago(InvestigationWindow)
+| where FileName in~ ("powershell.exe", "pwsh.exe", "powershell_ise.exe")
+     or ProcessVersionInfoProductName in~ ("POWERSHELL","pwsh.dll")
+     or ProcessVersionInfoFileDescription has "PowerShell"
+| distinct SHA1;
+DeviceNetworkEvents
+| where DeviceName has Device
+| where TimeGenerated > ago(InvestigationWindow)
+| where InitiatingProcessSHA1 in (PowerShellImages)
+| where InitiatingProcessParentFileName !in~  ("SenseIR.exe", "AgentExecutor.exe") // noisy Windows/MDE processes
+//| where RemoteIPType has "Public"
+| project TimeGenerated, ActionType, RemoteIP, RemotePort, RemoteIPType, RemoteUrl, InitiatingProcessFileName, InitiatingProcessCommandLine, InitiatingProcessParentFileName, DeviceName
+| take 100
+
+// Anomalous DNS requests versus organisational prevalence
+// T1071.004 DNS, T1568 Dynamic Resolution
+let TargetDevice = "wjec8853";
+let InvestigationWindow = 24h;
+let BaselineWindow = 30d;
+let MaximumOrgDevices = 3;
+let OrgPrevalence =
+    DeviceNetworkEvents
+    | where Timestamp between (ago(BaselineWindow) .. ago(InvestigationWindow))
+    | where ActionType == "DnsConnectionInspected"
+    | extend Domain = tostring(todynamic(AdditionalFields).query), DNSQueryDir = todynamic(AdditionalFields).direction
+    | where DNSQueryDir has "Out"
+    | where isnotempty(Domain)
+    | summarize OrgDeviceCount=dcount(DeviceId),
+                OrgQueryCount=count(),
+                OrgFirstSeen=min(Timestamp),
+                OrgLastSeen=max(Timestamp)
+        by Domain;
+DeviceNetworkEvents
+| where Timestamp >= ago(InvestigationWindow)
+| where DeviceName =~ TargetDevice
+| where ActionType == "DnsConnectionInspected"
+| extend Domain = tostring(todynamic(AdditionalFields).query), DNSQueryDir = todynamic(AdditionalFields).direction
+| where DNSQueryDir has "Out"
+| where isnotempty(Domain)
+| summarize DeviceQueryCount=count(),
+            FirstSeen=min(Timestamp),
+            LastSeen=max(Timestamp),
+            SourceCommands=make_set(InitiatingProcessCommandLine, 20),
+            SourceSHA1s=make_set(InitiatingProcessSHA1, 10),
+            SourceAccounts=make_set(InitiatingProcessAccountName, 10)
+    by DeviceId, DeviceName, Domain,
+       InitiatingProcessFileName,
+       InitiatingProcessFolderPath,
+       InitiatingProcessId
+| join kind=leftouter OrgPrevalence on Domain
+| extend OrgDeviceCount=coalesce(OrgDeviceCount, 0),
+         OrgQueryCount=coalesce(OrgQueryCount, 0),
+         NewToBaseline=OrgDeviceCount == 0
+| where OrgDeviceCount <= MaximumOrgDevices
+| project LastSeen, FirstSeen, DeviceName, Domain,
+          NewToBaseline, OrgDeviceCount, OrgQueryCount,
+          DeviceQueryCount,
+          InitiatingProcessFileName,
+          InitiatingProcessFolderPath,
+          InitiatingProcessId,
+          SourceAccounts, SourceCommands, SourceSHA1s,
+          OrgFirstSeen, OrgLastSeen
+| order by NewToBaseline desc, OrgDeviceCount asc, DeviceQueryCount desc
+
+// Abnormal NXDOMAIN volume
+// T1071.004 DNS, T1568 Dynamic Resolution
+// Excessive NXDOMAIN can indicate attempts to connect to 'dead' C2 domains
+//
+let Device = "";
+let lookback = 24h;
+let Threshold = 10;
+DeviceNetworkEvents
+| where DeviceName has Device
+| where TimeGenerated > ago(lookback)
+| where ActionType has "DnsConnectionInspected"
+| extend AF = parse_json(AdditionalFields)
+| extend
+    Direction = tostring(AF.direction),
+    Domain = tolower(tostring(AF.query)),
+    QueryType = tostring(AF.qtype_name),
+    ResponseCode = tostring(AF.rcode_name)
+| where Direction == "Out"
+| where ResponseCode == "NXDOMAIN"
+| summarize count() by Domain, ResponseCode
+| where count_  > Threshold
+| order by count_ desc 
+
+
+//============================
+// Impact
+//============================
+
+
+// Ransomware staging, recovery inhibition and bulk file activity
+// T1486 Data Encrypted for Impact, T1490 Inhibit System Recovery, T1561 Disk Wipe / Data Destruction
+let TargetDevice = "HOSTNAME";
+let Lookback = 24h;
+DeviceProcessEvents
+| where Timestamp >= ago(Lookback)
+| where DeviceName =~ TargetDevice
+| extend Cmd=tolower(ProcessCommandLine)
+| where (FileName =~ "vssadmin.exe" and Cmd contains "delete")
+    or (FileName =~ "wmic.exe" and Cmd contains "shadowcopy" and Cmd contains "delete")
+    or (FileName =~ "wbadmin.exe" and Cmd has_any ("delete", "catalog"))
+    or (FileName =~ "bcdedit.exe" and Cmd has_any ("recoveryenabled", "bootstatuspolicy"))
+    or (FileName =~ "diskshadow.exe")
+    or (FileName =~ "cipher.exe" and Cmd contains "/w")
+    or (FileName =~ "fsutil.exe" and Cmd contains "usn" and Cmd contains "deletejournal")
+| project Timestamp, DeviceName, AccountDomain, AccountName,
+          FileName, FolderPath, ProcessCommandLine,
+          SHA1, ProcessIntegrityLevel,
+          InitiatingProcessFileName,
+          InitiatingProcessCommandLine,
+          ProcessId, InitiatingProcessId, ReportId
+| order by Timestamp desc
+
+
+
+//============================
+// Cross-Tactic Detection
+//============================
+
+// ASR Rule Hits
+// Indicates actions that were blocked or audited by ASR in the detection timeframe
+// Note - LSASS is noisy and is only noteworthy if called by an unusual process
+//
+DeviceEvents
+| where DeviceName has "pwneddevice"
+| where TimeGenerated > ago(24h)
+| where ActionType startswith "asr"
+| project TimeGenerated, ActionType, FileName, FolderPath, SHA256, InitiatingProcessFileName, InitiatingProcessFolderPath
+
+
+// Consolidated process and network timeline
+// Use for manual anomaly hunting
+// (noisy)
+//
+let TargetDevice = "pwneddevice";
+let Lookback = 24h;
+let Processes =
+    DeviceProcessEvents
+    | where Timestamp >= ago(Lookback)
+    | where DeviceName has TargetDevice
+    | project Timestamp, DeviceName,
+            EventType="Process",
+            ProcessId,
+            ProcessName=FileName,
+            ProcessPath=FolderPath,
+            CommandLine=ProcessCommandLine,
+            ParentProcessId=InitiatingProcessId,
+            ParentProcess=InitiatingProcessFileName,
+            AccountName,
+            RemoteDestination="",
+            RemotePort=long(null),
+            SHA1,
+            ReportId;
+let Network =
+DeviceNetworkEvents
+    | where Timestamp >= ago(Lookback)
+    | where DeviceName =~ TargetDevice
+    | project Timestamp, DeviceName,
+            EventType=strcat("Network - ", ActionType),
+            ProcessId=InitiatingProcessId,
+            ProcessName=InitiatingProcessFileName,
+            ProcessPath=InitiatingProcessFolderPath,
+            CommandLine=InitiatingProcessCommandLine,
+            ParentProcessId=long(null),
+            ParentProcess="",
+            AccountName=InitiatingProcessAccountName,
+            RemoteDestination=iff(isnotempty(RemoteUrl), RemoteUrl, RemoteIP),
+            RemotePort,
+            SHA1=InitiatingProcessSHA1,
+            ReportId;
+union Processes, Network
+| order by Timestamp asc
+
+
+
+
+
